@@ -65,3 +65,5 @@ $WASM_OPT -Oz $BINDGEN_WASM -o dist/galaxy-cats-$HASH.wasm
 rm -f $BINDGEN_WASM
 sed "s/{git-hash-here}/$HASH/g" template.html > dist/index.html
 echo "Built and optimized wasm & web!"
+
+mkdir -p dist/assets && cp -R assets dist/
