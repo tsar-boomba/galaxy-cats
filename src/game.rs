@@ -5,9 +5,10 @@ use bevy_ggrs::{
     AddRollbackCommandExtension, GgrsConfig, LocalInputs, LocalPlayers, PlayerInputs, Rollback,
     Session,
 };
+use bevy_matchbox::{MatchboxSocket, prelude::PeerId};
 use serde::{Deserialize, Serialize};
 
-use crate::{GameState, Opt};
+use crate::{GameState, lobby_config::LobbyConfig};
 
 const INPUT_JUMP: u8 = 1 << 0;
 const INPUT_LEFT: u8 = 1 << 1;
@@ -25,8 +26,8 @@ const FUEL_REGEN: f32 = 5.0;
 const DASH_SPEED_MULTIPLIER: f32 = 2.0;
 const DASH_LENGTH: f32 = 0.7;
 const DASH_COOLDOWN: f32 = 4.0;
-const TRAIL_RADIUS: f32 = 0.25;
-const TRAIL_SPAWN_DIST: f32 = 0.5;
+const TRAIL_RADIUS: f32 = 0.2;
+const TRAIL_SPAWN_DIST: f32 = 0.4;
 const PLAYER_COLOR: [Color; 4] = [
     Color::srgb(1.0, 0.0, 0.0),
     Color::srgb(0.0, 0.0, 1.0),
@@ -36,7 +37,7 @@ const PLAYER_COLOR: [Color; 4] = [
 
 // You need to define a config struct to bundle all the generics of GGRS. bevy_ggrs provides a sensible default in `GgrsConfig`.
 // (optional) You can define a type here for brevity.
-pub type BoxConfig = GgrsConfig<Input>;
+pub type BoxConfig = GgrsConfig<Input, PeerId>;
 
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -108,7 +109,7 @@ pub fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     asset_server: Res<AssetServer>,
-    opt: Res<Opt>,
+    config: Res<LobbyConfig>,
     session: Res<Session<BoxConfig>>,
 ) {
     let num_players = match &*session {
@@ -149,12 +150,14 @@ pub fn setup(
         dash_cooldown.finish();
 
         // TODO: add some way for each client to know which player is which
-        let spawn_pos = match if handle == 0 { opt.id } else { if opt.id == 0 { 1 } else { 0 } } {
+        let spawn_pos = match handle {
             0 => Vec3::new(0., SPHERE_RADIUS, 0.),
             1 => Vec3::new(0., -SPHERE_RADIUS, 0.),
             2 => Vec3::new(SPHERE_RADIUS, 0., 0.),
             3 => Vec3::new(-SPHERE_RADIUS, 0., 0.),
-            _ => Vec3::new(0., 0., SPHERE_RADIUS),
+            4 => Vec3::new(0., 0., SPHERE_RADIUS),
+            5 => Vec3::new(0., 0., -SPHERE_RADIUS),
+            _ => panic!("Too many players!"),
         };
 
         commands
@@ -184,6 +187,35 @@ pub fn setup(
     }
 }
 
+fn reset_game(players: Query<(&mut Transform, &mut Velocity, &mut Player), With<Rollback>>) {
+    for (mut trans, mut vel, mut player) in players {
+        let spawn_pos = match player.handle {
+            0 => Vec3::new(0., SPHERE_RADIUS, 0.),
+            1 => Vec3::new(0., -SPHERE_RADIUS, 0.),
+            2 => Vec3::new(SPHERE_RADIUS, 0., 0.),
+            3 => Vec3::new(-SPHERE_RADIUS, 0., 0.),
+            4 => Vec3::new(0., 0., SPHERE_RADIUS),
+            5 => Vec3::new(0., 0., -SPHERE_RADIUS),
+            _ => panic!("Too many players!"),
+        };
+
+        *trans = Transform {
+            translation: spawn_pos,
+            rotation: Quat::from_rotation_y(-PI / 2.),
+            ..default()
+        };
+
+        *vel = Velocity::default();
+
+        player.fuel = 100.0;
+        player.hovering = false;
+        player.dash_cooldown.finish();
+        player.dashing.finish();
+        player.last_trail_pos = spawn_pos;
+        player.last_trail = None;
+    }
+}
+
 // Example system, manipulating a resource, will be added to the rollback schedule.
 // Increases the frame count by 1 every update step. If loading and saving resources works correctly,
 // you should see this resource rolling back, counting back up and finally increasing by 1 every update step
@@ -194,7 +226,7 @@ pub fn increase_frame_system(mut frame_count: ResMut<FrameCount>) {
 
 pub fn move_player(
     query: Query<(&mut Transform, &mut Velocity, &mut Player), With<Rollback>>,
-    //                                                          ^------^ Added by `add_rollback` earlier
+    //                                                              ^------^ Added by `add_rollback` earlier
     inputs: Res<PlayerInputs<BoxConfig>>,
     // Thanks to RollbackTimePlugin, this is rollback safe
     time: Res<Time>,
@@ -311,7 +343,7 @@ pub fn manage_trail(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    opt: Res<Opt>,
+    config: Res<LobbyConfig>,
     players: Query<(&mut Transform, &mut Player), With<Rollback>>,
 ) {
     for (transform, mut player) in players {
@@ -334,7 +366,7 @@ pub fn manage_trail(
                     DespawnOnExit(GameState::Playing),
                     Mesh3d(meshes.add(Cylinder::new(TRAIL_RADIUS, dist))),
                     MeshMaterial3d(materials.add(StandardMaterial {
-                        base_color: PLAYER_COLOR[opt.id],
+                        base_color: PLAYER_COLOR[player.handle],
                         ..default()
                     })),
                     Transform {
@@ -359,6 +391,7 @@ pub fn check_collisions(
     players: Query<(&Transform, &Player), With<Player>>,
     trails: Query<(Entity, &Transform), With<TrailSegment>>,
     mut next_state: ResMut<NextState<GameState>>,
+    socket: Res<MatchboxSocket>,
 ) {
     for (player_trans, player) in players {
         let p_pos = player_trans.translation;
@@ -379,7 +412,7 @@ pub fn check_collisions(
                 // or use actual Hitboxes if using a physics engine.
                 // For a first draft, simple distance is great.
                 log::info!("CRASH!");
-                // next_state.set(GameState::GameOver);
+                next_state.set(GameState::Lobby);
             }
         }
     }

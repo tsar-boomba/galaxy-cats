@@ -35,9 +35,13 @@ default = []
 debug = ["bevy/debug"]
 webgpu = ["bevy/webgpu"]
 
+[patch.crates-io]
+bevy_ggrs = { git = "https://github.com/tsar-boomba/bevy_ggrs.git" }
+
 [dependencies]
 log = { version = "*", features = ["max_level_debug", "release_max_level_warn"] }
 bevy = "0.18.0-rc.2"
 bevy_ggrs = { git = "https://github.com/tsar-boomba/bevy_ggrs.git" }
 serde = { version = "1.0.228", features = ["derive"] }
 clap = { version = "4.5.54", features = ["derive"] }
+bevy_matchbox = { git = "https://github.com/tsar-boomba/matchbox.git", features = ["ggrs"] }
