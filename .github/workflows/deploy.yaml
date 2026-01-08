@@ -37,7 +37,10 @@ jobs:
               with:
                   target: wasm32-unknown-unknown
                   rustflags: ''
-            - uses: Swatinem/rust-cache@v2
+            - name: Install wasm-bindgen-cli
+              uses: baptiste0928/cargo-install@v3
+              with:
+                  crate: wasm-bindgen-cli
             - run: ./build-web.sh
             - name: Upload Artifact
               uses: actions/upload-pages-artifact@v3

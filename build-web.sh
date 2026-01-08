@@ -50,6 +50,7 @@ get_wasm_opt() {
 
 cargo build --profile wasm-release -F webgpu --target wasm32-unknown-unknown
 
+echo "bindgening wasm"
 RUST_WASM=target/wasm32-unknown-unknown/wasm-release/galaxy-cats.wasm
 rm -rf dist
 wasm-bindgen --no-typescript --target web --out-dir ./dist $RUST_WASM
@@ -58,8 +59,9 @@ BINDGEN_WASM=dist/galaxy-cats_bg.wasm
 WASM_OPT=$(get_wasm_opt)
 HASH=$(git rev-parse HEAD)
 
+echo "wasm-opt-ing the wasm"
 $WASM_OPT -Oz $BINDGEN_WASM -o dist/galaxy-cats-$HASH.wasm
 
 rm -f $BINDGEN_WASM
-echo "Built and optimized wasm & web!"
 sed "s/{git-hash-here}/$HASH/g" template.html > dist/index.html
+echo "Built and optimized wasm & web!"
