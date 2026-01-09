@@ -4,23 +4,18 @@ pub mod game;
 mod lobby;
 mod lobby_config;
 
-use std::net::SocketAddr;
-
 use bevy::{prelude::*, window::WindowResolution};
-use bevy_ggrs::{
-    GgrsPlugin, GgrsSchedule, ReadInputs, RollbackApp, RollbackFrameRate, Session,
-    ggrs::{DesyncDetection, GgrsEvent, PlayerType, SessionBuilder, UdpNonBlockingSocket},
-};
-use clap::Parser;
+use bevy_ggrs::{Session, ggrs::GgrsEvent};
 
-use crate::{lobby::LobbyPlugin, lobby_config::LobbyConfigPlugin};
+use crate::{game::GamePlugin, lobby::LobbyPlugin, lobby_config::LobbyConfigPlugin};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default, States)]
-enum GameState {
+pub enum GameState {
     #[default]
     LobbyConfig,
     Lobby,
     Playing,
+    GameEnd,
 }
 
 // On non-web and web with WebGPU, target 60 FPS
@@ -35,7 +30,6 @@ struct NetworkStatsTimer(Timer);
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     App::new()
-        .add_plugins(GgrsPlugin::<game::BoxConfig>::default())
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 resolution: WindowResolution::new(640, 640),
@@ -49,45 +43,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ..default()
         }))
         .init_state::<GameState>()
-        .add_plugins(LobbyConfigPlugin)
-        .add_plugins(LobbyPlugin)
-        // define frequency of rollback game logic update
-        .insert_resource(RollbackFrameRate(FPS))
-        // this system will be executed as part of input reading
-        .add_systems(ReadInputs, game::read_local_inputs)
-        // Rollback behavior can be customized using a variety of extension methods and plugins:
-        // The FrameCount resource implements Copy, we can use that to have minimal overhead rollback
-        .rollback_resource_with_copy::<game::FrameCount>()
-        // Same with the Velocity Component
-        .rollback_component_with_copy::<game::Velocity>()
-        // Transform only implements Clone, so instead we'll use that to snapshot and rollback with
-        .rollback_component_with_clone::<Transform>()
-        .rollback_component_with_copy::<game::TrailSegment>()
-        // register a resource that will be rolled back
-        .insert_resource(game::FrameCount { frame: 0 })
+        .add_plugins((LobbyConfigPlugin, LobbyPlugin, GamePlugin))
         // print some network stats - not part of the rollback schedule as it does not need to be rolled back
         .insert_resource(NetworkStatsTimer(Timer::from_seconds(
             2.0,
             TimerMode::Repeating,
         )))
         .add_systems(Startup, setup_cameras)
-        .add_systems(OnEnter(GameState::Playing), game::setup)
-        // these systems will be executed as part of the advance frame update
-        .add_systems(
-            GgrsSchedule,
-            (
-                (
-                    game::move_player,
-                    game::move_camera,
-                    game::manage_trail,
-                    game::check_collisions,
-                )
-                    .chain(),
-                game::increase_frame_system,
-            ),
-        )
-        .add_systems(Update, print_network_stats_system)
-        .add_systems(Update, print_events_system)
+        .add_systems(Update, (print_network_stats_system, print_events_system))
         .run();
 
     Ok(())

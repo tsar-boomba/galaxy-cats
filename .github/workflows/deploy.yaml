@@ -36,7 +36,7 @@ jobs:
             - uses: actions-rust-lang/setup-rust-toolchain@v1
               with:
                   target: wasm32-unknown-unknown
-                  rustflags: ''
+                  rustflags: '' # TODO: make warnings error by removing this line
             - name: Install wasm-bindgen-cli
               uses: baptiste0928/cargo-install@v3
               with:

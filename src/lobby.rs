@@ -20,7 +20,7 @@ impl Plugin for LobbyPlugin {
     }
 }
 
-fn lobby_setup(mut commands: Commands, asset_server: Res<AssetServer>) {
+fn lobby_setup(mut commands: Commands) {
     // All this is just for spawning centered text.
     commands
         .spawn((
@@ -120,17 +120,6 @@ fn lobby_system(
 
     // transition to in-game state
     app_state.set(GameState::Playing);
-}
-
-fn log_ggrs_events(mut session: ResMut<Session<game::BoxConfig>>) {
-    match session.as_mut() {
-        Session::P2P(s) => {
-            for event in s.events() {
-                info!("GGRS Event: {event:?}");
-            }
-        }
-        _ => panic!("This example focuses on p2p."),
-    }
 }
 
 fn lobby_cleanup(mut commands: Commands, entities: Query<Entity, With<LobbyEntity>>) {

@@ -1,14 +1,12 @@
 use std::{f32::consts::PI, time::Duration};
 
 use bevy::{platform::collections::HashMap, prelude::*};
-use bevy_ggrs::{
-    AddRollbackCommandExtension, GgrsConfig, LocalInputs, LocalPlayers, PlayerInputs, Rollback,
-    Session,
-};
-use bevy_matchbox::{MatchboxSocket, prelude::PeerId};
+use bevy_ggrs::{LocalInputs, LocalPlayers, prelude::*};
+use bevy_matchbox::prelude::*;
+use bevy_roll_safe::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{GameState, lobby_config::LobbyConfig};
+use crate::{FPS, GameState};
 
 const INPUT_JUMP: u8 = 1 << 0;
 const INPUT_LEFT: u8 = 1 << 1;
@@ -39,11 +37,21 @@ const PLAYER_COLOR: [Color; 4] = [
 // (optional) You can define a type here for brevity.
 pub type BoxConfig = GgrsConfig<Input, PeerId>;
 
+#[derive(States, Clone, Eq, PartialEq, Debug, Hash, Default, Reflect)]
+enum RollbackState {
+    #[default]
+    None,
+    /// When the characters running around
+    InRound,
+    /// When one character is left, and we're transitioning to the next round
+    RoundEnd,
+}
+
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Input(u8);
 
-#[derive(Default, Component)]
+#[derive(Default, Component, Clone)]
 pub struct Player {
     pub handle: usize,
     pub fuel: f32,
@@ -72,6 +80,65 @@ pub struct TrailSegment {
 #[reflect(Hash)]
 pub struct FrameCount {
     pub frame: u32,
+}
+
+#[derive(Resource, Clone, Deref, DerefMut)]
+struct RoundEndTimer(Timer);
+
+impl Default for RoundEndTimer {
+    fn default() -> Self {
+        RoundEndTimer(Timer::from_seconds(1.0, TimerMode::Repeating))
+    }
+}
+
+pub struct GamePlugin;
+
+impl Plugin for GamePlugin {
+    fn build(&self, app: &mut App) {
+        app.add_plugins((
+            GgrsPlugin::<BoxConfig>::default(),
+            RollbackSchedulePlugin::new_ggrs(),
+        ))
+        .init_ggrs_state::<RollbackState>()
+        // define frequency of rollback game logic update
+        .insert_resource(RollbackFrameRate(FPS))
+        .init_resource::<RoundEndTimer>()
+        // this system will be executed as part of input reading
+        .add_systems(ReadInputs, read_local_inputs)
+        // Rollback behavior can be customized using a variety of extension methods and plugins:
+        // The FrameCount resource implements Copy, we can use that to have minimal overhead rollback
+        .rollback_resource_with_copy::<FrameCount>()
+        // Same with the Velocity Component
+        .rollback_component_with_copy::<Velocity>()
+        // Transform only implements Clone, so instead we'll use that to snapshot and rollback with
+        .rollback_component_with_clone::<Transform>()
+        .rollback_component_with_copy::<TrailSegment>()
+        .rollback_component_with_clone::<Player>()
+        .rollback_component_with_clone::<SceneRoot>()
+        .rollback_resource_with_clone::<RoundEndTimer>()
+        // register a resource that will be rolled back
+        .insert_resource(FrameCount { frame: 0 })
+        .add_systems(OnEnter(GameState::Playing), setup_env)
+        .add_systems(OnEnter(RollbackState::InRound), spawn_players)
+        // these systems will be executed as part of the advance frame update
+        .add_systems(
+            RollbackUpdate,
+            (
+                move_player,
+                manage_trail.after(move_player),
+                move_camera.after(manage_trail),
+                check_collisions.after(move_camera),
+            )
+                .run_if(in_state(RollbackState::InRound))
+                .after(bevy_roll_safe::apply_state_transition::<RollbackState>),
+        )
+        .add_systems(
+            RollbackUpdate,
+            round_end_timeout
+                .ambiguous_with(check_collisions)
+                .run_if(in_state(RollbackState::RoundEnd)),
+        );
+    }
 }
 
 /// Collects player inputs during [`ReadInputs`](`bevy_ggrs::ReadInputs`) and creates a [`LocalInputs`] resource.
@@ -104,20 +171,13 @@ pub fn read_local_inputs(
     commands.insert_resource(LocalInputs::<BoxConfig>(local_inputs));
 }
 
-pub fn setup(
+/// Setup sphere and lights then set rollback state to in round
+fn setup_env(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    asset_server: Res<AssetServer>,
-    config: Res<LobbyConfig>,
-    session: Res<Session<BoxConfig>>,
+    mut next_state: ResMut<NextState<RollbackState>>,
 ) {
-    let num_players = match &*session {
-        Session::SyncTest(s) => s.num_players(),
-        Session::P2P(s) => s.num_players(),
-        Session::Spectator(s) => s.num_players(),
-    };
-
     // Light
     commands.spawn((
         DespawnOnExit(GameState::Playing),
@@ -141,6 +201,31 @@ pub fn setup(
         },
     ));
 
+    next_state.set(RollbackState::InRound);
+}
+
+/// make sure no leftover players or trails, then spawn in players
+fn spawn_players(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    session: Res<Session<BoxConfig>>,
+    players: Query<Entity, With<Player>>,
+    trails: Query<Entity, With<TrailSegment>>,
+) {
+    for player in players {
+        commands.entity(player).despawn();
+    }
+
+    for trail in trails {
+        commands.entity(trail).despawn();
+    }
+
+    let num_players = match &*session {
+        Session::SyncTest(s) => s.num_players(),
+        Session::P2P(s) => s.num_players(),
+        Session::Spectator(s) => s.num_players(),
+    };
+
     for handle in 0..num_players {
         // Entities which will be rolled back can be created just like any other...
         let mut dashing = Timer::from_seconds(DASH_LENGTH, TimerMode::Once);
@@ -153,10 +238,20 @@ pub fn setup(
         let spawn_pos = match handle {
             0 => Vec3::new(0., SPHERE_RADIUS, 0.),
             1 => Vec3::new(0., -SPHERE_RADIUS, 0.),
-            2 => Vec3::new(SPHERE_RADIUS, 0., 0.),
-            3 => Vec3::new(-SPHERE_RADIUS, 0., 0.),
             4 => Vec3::new(0., 0., SPHERE_RADIUS),
             5 => Vec3::new(0., 0., -SPHERE_RADIUS),
+            2 => Vec3::new(SPHERE_RADIUS, 0., 0.),
+            3 => Vec3::new(-SPHERE_RADIUS, 0., 0.),
+            _ => panic!("Too many players!"),
+        };
+
+        let spawn_rot = match handle {
+            0 => Quat::from_rotation_y(-PI / 2.),
+            1 => Quat::from_rotation_y(PI / 2.),
+            4 => Quat::from_rotation_z(-PI / 2.),
+            5 => Quat::from_rotation_z(PI / 2.),
+            2 => Quat::from_rotation_x(-PI / 2.),
+            3 => Quat::from_rotation_x(PI / 2.),
             _ => panic!("Too many players!"),
         };
 
@@ -165,7 +260,7 @@ pub fn setup(
                 DespawnOnExit(GameState::Playing),
                 Transform {
                     translation: spawn_pos,
-                    rotation: Quat::from_rotation_y(-PI / 2.),
+                    rotation: spawn_rot,
                     ..default()
                 },
                 Player {
@@ -187,35 +282,6 @@ pub fn setup(
     }
 }
 
-fn reset_game(players: Query<(&mut Transform, &mut Velocity, &mut Player), With<Rollback>>) {
-    for (mut trans, mut vel, mut player) in players {
-        let spawn_pos = match player.handle {
-            0 => Vec3::new(0., SPHERE_RADIUS, 0.),
-            1 => Vec3::new(0., -SPHERE_RADIUS, 0.),
-            2 => Vec3::new(SPHERE_RADIUS, 0., 0.),
-            3 => Vec3::new(-SPHERE_RADIUS, 0., 0.),
-            4 => Vec3::new(0., 0., SPHERE_RADIUS),
-            5 => Vec3::new(0., 0., -SPHERE_RADIUS),
-            _ => panic!("Too many players!"),
-        };
-
-        *trans = Transform {
-            translation: spawn_pos,
-            rotation: Quat::from_rotation_y(-PI / 2.),
-            ..default()
-        };
-
-        *vel = Velocity::default();
-
-        player.fuel = 100.0;
-        player.hovering = false;
-        player.dash_cooldown.finish();
-        player.dashing.finish();
-        player.last_trail_pos = spawn_pos;
-        player.last_trail = None;
-    }
-}
-
 // Example system, manipulating a resource, will be added to the rollback schedule.
 // Increases the frame count by 1 every update step. If loading and saving resources works correctly,
 // you should see this resource rolling back, counting back up and finally increasing by 1 every update step
@@ -225,8 +291,7 @@ pub fn increase_frame_system(mut frame_count: ResMut<FrameCount>) {
 }
 
 pub fn move_player(
-    query: Query<(&mut Transform, &mut Velocity, &mut Player), With<Rollback>>,
-    //                                                              ^------^ Added by `add_rollback` earlier
+    query: Query<(&mut Transform, &mut Velocity, &mut Player), With<Player>>,
     inputs: Res<PlayerInputs<BoxConfig>>,
     // Thanks to RollbackTimePlugin, this is rollback safe
     time: Res<Time>,
@@ -343,8 +408,7 @@ pub fn manage_trail(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    config: Res<LobbyConfig>,
-    players: Query<(&mut Transform, &mut Player), With<Rollback>>,
+    players: Query<(&mut Transform, &mut Player), With<Player>>,
 ) {
     for (transform, mut player) in players {
         // Calculate distance since last segment
@@ -378,6 +442,7 @@ pub fn manage_trail(
                         player_handle: player.handle,
                     },
                 ))
+                .add_rollback()
                 .id();
 
             // Update the last spawn position to current position
@@ -387,16 +452,18 @@ pub fn manage_trail(
     }
 }
 
-pub fn check_collisions(
-    players: Query<(&Transform, &Player), With<Player>>,
-    trails: Query<(Entity, &Transform), With<TrailSegment>>,
-    mut next_state: ResMut<NextState<GameState>>,
-    socket: Res<MatchboxSocket>,
+fn check_collisions(
+    mut commands: Commands,
+    players: Query<(Entity, &Transform, &Player), With<Player>>,
+    trails: Query<&Transform, With<TrailSegment>>,
+    mut next_state: ResMut<NextState<RollbackState>>,
 ) {
-    for (player_trans, player) in players {
+    let num_players = players.count();
+
+    for (entity, player_trans, player) in players {
         let p_pos = player_trans.translation;
 
-        for (entity, trail_transform) in trails {
+        for trail_transform in trails {
             if player.last_trail.is_some_and(|id| id == entity) {
                 // Don't collide with own most recently spawned segment
                 continue;
@@ -411,21 +478,38 @@ pub fn check_collisions(
                 // You can refine this logic to be more strict
                 // or use actual Hitboxes if using a physics engine.
                 // For a first draft, simple distance is great.
-                log::info!("CRASH!");
-                next_state.set(GameState::Lobby);
+
+                commands.entity(entity).despawn();
+                if num_players - 1 <= 1 {
+                    // 0 or 1 player left, game over
+                    next_state.set(RollbackState::RoundEnd);
+                }
             }
         }
     }
 }
 
-pub fn move_camera(
+fn round_end_timeout(
+    mut timer: ResMut<RoundEndTimer>,
+    mut state: ResMut<NextState<RollbackState>>,
+    time: Res<Time>,
+) {
+    timer.tick(time.delta());
+
+    if timer.just_finished() {
+        state.set(RollbackState::InRound);
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn move_camera(
     local_players: Res<LocalPlayers>,
     mut transforms: ParamSet<(
         Single<&mut Transform, With<Camera3d>>,
         Query<(&mut Transform, &mut Velocity, &Player), With<Rollback>>,
     )>,
 ) {
-    // Find local player's transform
+    // Find local player's transform or return
     let Some(player_transform) = transforms
         .p1()
         .iter()
