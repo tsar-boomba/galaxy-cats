@@ -1,6 +1,9 @@
 use bevy::prelude::*;
 use bevy_ggrs::Session;
-use bevy_matchbox::MatchboxSocket;
+use bevy_matchbox::{
+    MatchboxSocket,
+    matchbox_socket::{RtcIceServerConfig, WebRtcSocket},
+};
 
 use crate::{GameState, game};
 
@@ -39,7 +42,7 @@ impl Plugin for LobbyConfigPlugin {
 fn lobby_config_setup(
     mut commands: Commands,
     mut lobby_config: ResMut<LobbyConfig>,
-    asset_server: Res<AssetServer>,
+    _asset_server: Res<AssetServer>,
     old_socket: Option<ResMut<MatchboxSocket>>,
 ) {
     *lobby_config = LobbyConfig::default();
@@ -47,6 +50,7 @@ fn lobby_config_setup(
     // Reset networking stuff when entering lobby_config
     if let Some(mut old_socket) = old_socket {
         old_socket.close();
+        commands.remove_resource::<MatchboxSocket>();
     }
 
     commands.remove_resource::<Session<game::BoxConfig>>();
@@ -121,7 +125,7 @@ fn lobby_config_system(
         Changed<Interaction>,
     >,
 ) {
-    for (entity, interaction, mut button, button_type) in &mut interaction_query {
+    for (_entity, interaction, mut _button, button_type) in &mut interaction_query {
         match *interaction {
             Interaction::Pressed => {
                 match button_type {
@@ -149,7 +153,21 @@ fn lobby_config_system(
                             );
                             info!("connecting to matchbox server: {room_url:?}");
 
-                            commands.insert_resource(MatchboxSocket::new_unreliable(room_url));
+                            commands.insert_resource(MatchboxSocket::from(
+                                WebRtcSocket::builder(room_url)
+                                    .add_unreliable_channel()
+                                    .ice_server(RtcIceServerConfig {
+                                        urls: vec![
+                                            "stun:stun.l.google.com:19302".to_string(),
+                                            "stun:stun1.l.google.com:19302".to_string(),
+                                            "turn:gc-server.igamble.dev:3478".to_string(),
+                                        ],
+                                        // TODO: real turn auth???
+                                        username: Some("username".into()),
+                                        credential: Some("password".into()),
+                                    })
+                                    .build(),
+                            ));
                             app_state.set(GameState::Lobby);
                             return;
                         }
