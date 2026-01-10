@@ -17,8 +17,8 @@ const SPHERE_RADIUS: f32 = 4.0;
 const SPHERE_RADIUS_SQ: f32 = SPHERE_RADIUS * SPHERE_RADIUS;
 const MOVE_SPEED: f32 = 5.0;
 const ROTATE_SPEED: f32 = 0.5;
-const GRAVITY: f32 = -15.0;
-const JUMP_VELOCITY: f32 = 6.0;
+const GRAVITY: f32 = -75.0;
+const JUMP_VELOCITY: f32 = 15.0;
 const FUEL_USAGE: f32 = 50.0;
 const FUEL_REGEN: f32 = 10.0;
 const DASH_SPEED_MULTIPLIER: f32 = 2.0;
@@ -415,8 +415,8 @@ pub fn move_player(
 
         // Increment fuel while grounded
         let is_grounded = transform.translation.length_squared() <= SPHERE_RADIUS_SQ + 0.02;
-        if is_grounded {
-            player.fuel = 100.0_f32.min(player.fuel + FUEL_REGEN * dt);
+        if is_grounded && player.fuel <= 100.0 {
+            player.fuel += FUEL_REGEN * dt;
         }
 
         // Snap player to sphere radius if they're below
