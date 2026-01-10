@@ -17,15 +17,18 @@ const SPHERE_RADIUS: f32 = 4.0;
 const SPHERE_RADIUS_SQ: f32 = SPHERE_RADIUS * SPHERE_RADIUS;
 const MOVE_SPEED: f32 = 5.0;
 const ROTATE_SPEED: f32 = 0.5;
-const GRAVITY: f32 = -11.0;
+const GRAVITY: f32 = -15.0;
 const JUMP_VELOCITY: f32 = 6.0;
-const FUEL_USAGE: f32 = 20.0;
-const FUEL_REGEN: f32 = 5.0;
+const FUEL_USAGE: f32 = 50.0;
+const FUEL_REGEN: f32 = 10.0;
 const DASH_SPEED_MULTIPLIER: f32 = 2.0;
 const DASH_LENGTH: f32 = 0.7;
 const DASH_COOLDOWN: f32 = 4.0;
+const PLAYER_RADIUS: f32 = 0.2;
 const TRAIL_RADIUS: f32 = 0.2;
-const TRAIL_SPAWN_DIST: f32 = 0.4;
+const TRAIL_SPAWN_DIST: f32 = TRAIL_RADIUS / 2.0;
+/// Trail must exist for this many seconds before it kills people
+const MIN_TRAIL_LIFE: f64 = 0.25;
 const PLAYER_COLOR: [Color; 4] = [
     Color::srgb(1.0, 0.0, 0.0),
     Color::srgb(0.0, 0.0, 1.0),
@@ -72,7 +75,7 @@ pub struct Velocity(pub Vec3);
 
 #[derive(Default, Clone, Copy, Component)]
 pub struct TrailSegment {
-    pub player_handle: usize,
+    created_at: f64,
 }
 
 // You can also register resources.
@@ -87,7 +90,7 @@ struct RoundEndTimer(Timer);
 
 impl Default for RoundEndTimer {
     fn default() -> Self {
-        RoundEndTimer(Timer::from_seconds(1.0, TimerMode::Repeating))
+        RoundEndTimer(Timer::from_seconds(0.75, TimerMode::Repeating))
     }
 }
 
@@ -187,14 +190,29 @@ fn setup_env(
             range: 30.0,
             ..default()
         },
-        Transform::from_xyz(4.0, 10.0, 4.0),
+        Transform::from_xyz(0.0, SPHERE_RADIUS + 10.0, 0.0),
+    ));
+
+    commands.spawn((
+        DespawnOnExit(GameState::Playing),
+        PointLight {
+            intensity: 2_000_000.0,
+            shadows_enabled: true,
+            range: 30.0,
+            ..default()
+        },
+        Transform::from_xyz(0.0, -SPHERE_RADIUS - 10.0, 0.0),
     ));
 
     // Sphere
     commands.spawn((
         DespawnOnExit(GameState::Playing),
         Mesh3d(meshes.add(Sphere::new(SPHERE_RADIUS))),
-        MeshMaterial3d(materials.add(Color::WHITE)),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgba_u8(64, 198, 255, 104),
+            alpha_mode: AlphaMode::Blend,
+            ..Default::default()
+        })),
         Transform {
             translation: Vec3::ZERO,
             ..Default::default()
@@ -335,7 +353,12 @@ pub fn move_player(
 
         let delta_grav = GRAVITY * dt;
         // Would start to fall on this update, if jump is held, start hovering
-        if jump && vel.y + delta_grav <= 0.0 && !is_grounded && !player.hovering {
+        if jump
+            && vel.y.is_sign_positive()
+            && (vel.y + delta_grav).is_sign_negative()
+            && !is_grounded
+            && !player.hovering
+        {
             player.hovering = true;
         }
 
@@ -404,11 +427,12 @@ pub fn move_player(
     }
 }
 
-pub fn manage_trail(
+fn manage_trail(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     players: Query<(&mut Transform, &mut Player), With<Player>>,
+    time: Res<Time>,
 ) {
     for (transform, mut player) in players {
         // Calculate distance since last segment
@@ -416,7 +440,8 @@ pub fn manage_trail(
 
         if dist > TRAIL_SPAWN_DIST {
             // Calculate the midpoint between current and last position
-            let midpoint = (transform.translation + player.last_trail_pos) / 2.0;
+            let midpoint = ((transform.translation + player.last_trail_pos) / 2.0)
+                + (TRAIL_RADIUS * transform.up());
 
             // Direction from last to current
             let direction = (transform.translation - player.last_trail_pos).normalize();
@@ -428,7 +453,7 @@ pub fn manage_trail(
             let last_spawned = commands
                 .spawn((
                     DespawnOnExit(GameState::Playing),
-                    Mesh3d(meshes.add(Cylinder::new(TRAIL_RADIUS, dist))),
+                    Mesh3d(meshes.add(Cylinder::new(TRAIL_RADIUS, TRAIL_RADIUS))),
                     MeshMaterial3d(materials.add(StandardMaterial {
                         base_color: PLAYER_COLOR[player.handle],
                         ..default()
@@ -439,7 +464,7 @@ pub fn manage_trail(
                         ..default()
                     },
                     TrailSegment {
-                        player_handle: player.handle,
+                        created_at: time.elapsed_secs_f64(),
                     },
                 ))
                 .add_rollback()
@@ -455,26 +480,35 @@ pub fn manage_trail(
 fn check_collisions(
     mut commands: Commands,
     players: Query<(Entity, &Transform, &Player), With<Player>>,
-    trails: Query<&Transform, With<TrailSegment>>,
+    trails: Query<(&Transform, &TrailSegment), With<TrailSegment>>,
     mut next_state: ResMut<NextState<RollbackState>>,
+    time: Res<Time>,
 ) {
     let num_players = players.count();
 
-    for (entity, player_trans, player) in players {
-        let p_pos = player_trans.translation;
-
-        for trail_transform in trails {
-            if player.last_trail.is_some_and(|id| id == entity) {
+    for (entity, player_trans, _player) in players {
+        for (trail_transform, segment) in trails {
+            if time.elapsed_secs_f64() - segment.created_at < MIN_TRAIL_LIFE {
                 // Don't collide with own most recently spawned segment
                 continue;
             }
 
-            let t_pos = trail_transform.translation;
-            let distance = p_pos.distance(t_pos);
+            let p = player_trans.translation;
+            let b = trail_transform.translation;
 
-            // 1. Only check segments that aren't the one we just dropped (buffer)
-            // 2. If distance is very small, we hit a segment
-            if distance < TRAIL_RADIUS {
+            // We need the direction the trail is pointing to find the ends
+            // Since you used Quat::from_rotation_arc(Vec3::Y, direction),
+            // the trail's local Y axis is its "length"
+            let trail_dir = trail_transform.up();
+            let half_height = TRAIL_SPAWN_DIST / 2.0;
+
+            let start = b - trail_dir * half_height;
+            let end = b + trail_dir * half_height;
+
+            // Calculate distance from point P to segment [start, end]
+            let distance = dist_to_segment(p, start, end);
+
+            if distance < (TRAIL_RADIUS + PLAYER_RADIUS) {
                 // You can refine this logic to be more strict
                 // or use actual Hitboxes if using a physics engine.
                 // For a first draft, simple distance is great.
@@ -487,6 +521,22 @@ fn check_collisions(
             }
         }
     }
+}
+
+fn dist_to_segment(p: Vec3, a: Vec3, b: Vec3) -> f32 {
+    let v = b - a;
+    let w = p - a;
+    let c1 = w.dot(v);
+    if c1 <= 0.0 {
+        return p.distance(a);
+    }
+    let c2 = v.dot(v);
+    if c2 <= c1 {
+        return p.distance(b);
+    }
+    let b2 = c1 / c2;
+    let pb = a + v * b2;
+    p.distance(pb)
 }
 
 fn round_end_timeout(
