@@ -18,13 +18,13 @@ const SPHERE_RADIUS_SQ: f32 = SPHERE_RADIUS * SPHERE_RADIUS;
 const MOVE_SPEED: f32 = 5.0;
 const ROTATE_SPEED: f32 = 0.5;
 const GRAVITY: f32 = -75.0;
-const JUMP_VELOCITY: f32 = 15.0;
-const FUEL_USAGE: f32 = 50.0;
-const FUEL_REGEN: f32 = 10.0;
+const JUMP_VELOCITY: f32 = 16.0;
+const FUEL_USAGE: f32 = 66.6667;
+const FUEL_REGEN: f32 = 20.0;
 const DASH_SPEED_MULTIPLIER: f32 = 2.0;
 const DASH_LENGTH: f32 = 0.7;
 const DASH_COOLDOWN: f32 = 4.0;
-const PLAYER_RADIUS: f32 = 0.2;
+const PLAYER_RADIUS: f32 = 0.18;
 const TRAIL_RADIUS: f32 = 0.2;
 const TRAIL_SPAWN_DIST: f32 = TRAIL_RADIUS / 2.0;
 /// Trail must exist for this many seconds before it kills people
@@ -256,20 +256,20 @@ fn spawn_players(
         let spawn_pos = match handle {
             0 => Vec3::new(0., SPHERE_RADIUS, 0.),
             1 => Vec3::new(0., -SPHERE_RADIUS, 0.),
+            3 => Vec3::new(-SPHERE_RADIUS, 0., 0.),
+            2 => Vec3::new(SPHERE_RADIUS, 0., 0.),
             4 => Vec3::new(0., 0., SPHERE_RADIUS),
             5 => Vec3::new(0., 0., -SPHERE_RADIUS),
-            2 => Vec3::new(SPHERE_RADIUS, 0., 0.),
-            3 => Vec3::new(-SPHERE_RADIUS, 0., 0.),
             _ => panic!("Too many players!"),
         };
 
         let spawn_rot = match handle {
             0 => Quat::from_rotation_y(-PI / 2.),
             1 => Quat::from_rotation_y(PI / 2.),
-            4 => Quat::from_rotation_z(-PI / 2.),
-            5 => Quat::from_rotation_z(PI / 2.),
             2 => Quat::from_rotation_x(-PI / 2.),
             3 => Quat::from_rotation_x(PI / 2.),
+            4 => Quat::from_rotation_z(-PI / 2.),
+            5 => Quat::from_rotation_z(PI / 2.),
             _ => panic!("Too many players!"),
         };
 
@@ -370,7 +370,6 @@ pub fn move_player(
         // Stop hover if jump is released or out of fuel
         if player.hovering && (!jump || player.fuel <= 0.0) {
             player.hovering = false;
-            player.fuel = 0.0;
         }
 
         // Apply Gravity if in air and not hovering

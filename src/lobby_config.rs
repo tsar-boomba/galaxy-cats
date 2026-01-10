@@ -24,6 +24,8 @@ enum ButtonType {
     TwoPlayers,
     ThreePlayers,
     FourPlayers,
+    FivePlayers,
+    SixPlayers,
     Join,
 }
 
@@ -107,7 +109,9 @@ fn lobby_config_setup(
                 children![
                     button("2", ButtonType::TwoPlayers),
                     button("3", ButtonType::ThreePlayers),
-                    button("4", ButtonType::FourPlayers)
+                    button("4", ButtonType::FourPlayers),
+                    button("5", ButtonType::FivePlayers),
+                    button("6", ButtonType::SixPlayers),
                 ],
             ));
 
@@ -138,6 +142,12 @@ fn lobby_config_system(
                     ButtonType::FourPlayers => {
                         lobby_config.players = 4;
                     }
+                    ButtonType::FivePlayers => {
+                        lobby_config.players = 5;
+                    },
+                    ButtonType::SixPlayers => {
+                        lobby_config.players = 6;
+                    },
                     ButtonType::Join => {
                         // TODO: actually input server/room
                         lobby_config.server = "wss://gc-matchbox.igamble.dev".into();
@@ -172,6 +182,7 @@ fn lobby_config_system(
                             return;
                         }
                     }
+                    
                 }
             }
             Interaction::Hovered => {}
