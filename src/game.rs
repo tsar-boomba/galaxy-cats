@@ -1,9 +1,10 @@
-use std::{f32::consts::PI, time::Duration};
+use std::{borrow::Cow, f32::consts::PI, time::Duration};
 
 use bevy::{platform::collections::HashMap, prelude::*};
 use bevy_ggrs::{LocalInputs, LocalPlayers, prelude::*};
 use bevy_matchbox::prelude::*;
 use bevy_roll_safe::prelude::*;
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
 use crate::{FPS, GameState};
@@ -29,22 +30,48 @@ const TRAIL_RADIUS: f32 = 0.2;
 const TRAIL_SPAWN_DIST: f32 = TRAIL_RADIUS / 2.0;
 /// Trail must exist for this many seconds before it kills people
 const MIN_TRAIL_LIFE: f64 = 0.25;
-const PLAYER_COLOR: [Color; 4] = [
-    Color::srgb(1.0, 0.0, 0.0),
-    Color::srgb(0.0, 0.0, 1.0),
-    Color::srgb(0.0, 1.0, 0.0),
-    Color::srgb(1.0, 0.5, 0.0),
+
+struct SlotInfo {
+    #[allow(unused)]
+    number: u8,
+    color: Color,
+}
+const SLOT_INFO: [SlotInfo; 6] = [
+    SlotInfo {
+        number: 1,
+        color: Color::srgb(1.0, 0.0, 0.0),
+    },
+    SlotInfo {
+        number: 2,
+        color: Color::srgb(0.8, 0.0, 1.0),
+    },
+    SlotInfo {
+        number: 3,
+        color: Color::srgb(0.0, 1.0, 0.0),
+    },
+    SlotInfo {
+        number: 4,
+        color: Color::srgb(1.0, 0.5, 0.0),
+    },
+    SlotInfo {
+        number: 5,
+        color: Color::srgb(0.0, 0.0, 1.0),
+    },
+    SlotInfo {
+        number: 6,
+        color: Color::srgb(1.0, 1.0, 0.0),
+    },
 ];
 
 // You need to define a config struct to bundle all the generics of GGRS. bevy_ggrs provides a sensible default in `GgrsConfig`.
 // (optional) You can define a type here for brevity.
-pub type BoxConfig = GgrsConfig<Input, PeerId>;
+pub type GameConfig = GgrsConfig<Input, PeerId>;
 
 #[derive(States, Clone, Eq, PartialEq, Debug, Hash, Default, Reflect)]
 enum RollbackState {
     #[default]
     None,
-    /// When the characters running around
+    /// When the characters are running around
     InRound,
     /// When one character is left, and we're transitioning to the next round
     RoundEnd,
@@ -71,22 +98,33 @@ pub struct Player {
 // - Reflect
 // See `bevy_ggrs::Strategy` for custom alternatives
 #[derive(Default, Reflect, Component, Clone, Copy, Deref, DerefMut)]
-pub struct Velocity(pub Vec3);
+struct Velocity(Vec3);
 
 #[derive(Default, Clone, Copy, Component)]
-pub struct TrailSegment {
+struct TrailSegment {
     created_at: f64,
 }
 
 // You can also register resources.
 #[derive(Resource, Default, Reflect, Hash, Clone, Copy)]
 #[reflect(Hash)]
-pub struct FrameCount {
-    pub frame: u32,
+struct FrameCount {
+    frame: u32,
 }
+
+#[derive(Component)]
+struct Scoreboard;
 
 #[derive(Resource, Clone, Deref, DerefMut)]
 struct RoundEndTimer(Timer);
+
+/// Map from player handle to score
+#[derive(Resource, Default, Clone, Deref, DerefMut)]
+struct Scores(HashMap<usize, u32>);
+
+/// Stack tracking the death order
+#[derive(Resource, Default, Clone, Deref, DerefMut)]
+struct DeathStack(Vec<usize>);
 
 impl Default for RoundEndTimer {
     fn default() -> Self {
@@ -99,13 +137,15 @@ pub struct GamePlugin;
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
-            GgrsPlugin::<BoxConfig>::default(),
+            GgrsPlugin::<GameConfig>::default(),
             RollbackSchedulePlugin::new_ggrs(),
         ))
         .init_ggrs_state::<RollbackState>()
         // define frequency of rollback game logic update
         .insert_resource(RollbackFrameRate(FPS))
         .init_resource::<RoundEndTimer>()
+        .init_resource::<Scores>()
+        .init_resource::<DeathStack>()
         // this system will be executed as part of input reading
         .add_systems(ReadInputs, read_local_inputs)
         // Rollback behavior can be customized using a variety of extension methods and plugins:
@@ -119,10 +159,15 @@ impl Plugin for GamePlugin {
         .rollback_component_with_clone::<Player>()
         .rollback_component_with_clone::<SceneRoot>()
         .rollback_resource_with_clone::<RoundEndTimer>()
+        .rollback_resource_with_clone::<Scores>()
+        .rollback_resource_with_clone::<DeathStack>()
         // register a resource that will be rolled back
         .insert_resource(FrameCount { frame: 0 })
         .add_systems(OnEnter(GameState::Playing), setup_env)
-        .add_systems(OnEnter(RollbackState::InRound), spawn_players)
+        .add_systems(
+            OnEnter(RollbackState::InRound),
+            (spawn_players, update_scoreboard).chain(),
+        )
         // these systems will be executed as part of the advance frame update
         .add_systems(
             RollbackUpdate,
@@ -131,6 +176,7 @@ impl Plugin for GamePlugin {
                 manage_trail.after(move_player),
                 move_camera.after(manage_trail),
                 check_collisions.after(move_camera),
+                check_round_end.after(check_collisions),
             )
                 .run_if(in_state(RollbackState::InRound))
                 .after(bevy_roll_safe::apply_state_transition::<RollbackState>),
@@ -138,7 +184,7 @@ impl Plugin for GamePlugin {
         .add_systems(
             RollbackUpdate,
             round_end_timeout
-                .ambiguous_with(check_collisions)
+                .ambiguous_with(check_round_end)
                 .run_if(in_state(RollbackState::RoundEnd)),
         );
     }
@@ -171,38 +217,61 @@ pub fn read_local_inputs(
         local_inputs.insert(*handle, Input(input));
     }
 
-    commands.insert_resource(LocalInputs::<BoxConfig>(local_inputs));
+    commands.insert_resource(LocalInputs::<GameConfig>(local_inputs));
 }
 
 /// Setup sphere and lights then set rollback state to in round
 fn setup_env(
     mut commands: Commands,
+    session: Res<Session<GameConfig>>,
+    mut scores: ResMut<Scores>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut ambient_light: ResMut<GlobalAmbientLight>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut next_state: ResMut<NextState<RollbackState>>,
 ) {
-    // Light
-    commands.spawn((
-        DespawnOnExit(GameState::Playing),
-        PointLight {
-            intensity: 2_000_000.0,
-            shadows_enabled: true,
-            range: 30.0,
-            ..default()
-        },
-        Transform::from_xyz(0.0, SPHERE_RADIUS + 10.0, 0.0),
-    ));
+    let num_players = match &*session {
+        Session::SyncTest(s) => s.num_players(),
+        Session::P2P(s) => s.num_players(),
+        Session::Spectator(s) => s.num_players(),
+    };
 
+    // Reset and init scores
+    scores.clear();
+    for handle in 0..num_players {
+        scores.insert(handle, 0);
+    }
+
+    // Scoreboard text
     commands.spawn((
-        DespawnOnExit(GameState::Playing),
-        PointLight {
-            intensity: 2_000_000.0,
-            shadows_enabled: true,
-            range: 30.0,
+        Node {
+            width: Val::Percent(100.0),
+            height: Val::Percent(100.0),
+            position_type: PositionType::Absolute,
+            justify_content: JustifyContent::FlexStart,
+            align_items: AlignItems::FlexStart,
+            flex_direction: FlexDirection::Column,
             ..default()
         },
-        Transform::from_xyz(0.0, -SPHERE_RADIUS - 10.0, 0.0),
+        BackgroundColor(Color::NONE),
+        children![(
+            Node {
+                align_self: AlignSelf::Center,
+                justify_content: JustifyContent::Center,
+                ..Default::default()
+            },
+            Text::new(scoreboard_text(&scores)),
+            TextFont {
+                font_size: 48.,
+                ..default()
+            },
+            TextColor(Color::WHITE),
+            Scoreboard,
+        )],
     ));
+    
+    // Brighten
+    ambient_light.brightness = 500.0;
 
     // Sphere
     commands.spawn((
@@ -226,9 +295,10 @@ fn setup_env(
 fn spawn_players(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
-    session: Res<Session<BoxConfig>>,
+    session: Res<Session<GameConfig>>,
     players: Query<Entity, With<Player>>,
     trails: Query<Entity, With<TrailSegment>>,
+    mut death_stack: ResMut<DeathStack>,
 ) {
     for player in players {
         commands.entity(player).despawn();
@@ -237,6 +307,8 @@ fn spawn_players(
     for trail in trails {
         commands.entity(trail).despawn();
     }
+
+    death_stack.clear();
 
     let num_players = match &*session {
         Session::SyncTest(s) => s.num_players(),
@@ -304,13 +376,13 @@ fn spawn_players(
 // Increases the frame count by 1 every update step. If loading and saving resources works correctly,
 // you should see this resource rolling back, counting back up and finally increasing by 1 every update step
 #[allow(dead_code)]
-pub fn increase_frame_system(mut frame_count: ResMut<FrameCount>) {
+fn increase_frame_system(mut frame_count: ResMut<FrameCount>) {
     frame_count.frame += 1;
 }
 
-pub fn move_player(
+fn move_player(
     query: Query<(&mut Transform, &mut Velocity, &mut Player), With<Player>>,
-    inputs: Res<PlayerInputs<BoxConfig>>,
+    inputs: Res<PlayerInputs<GameConfig>>,
     // Thanks to RollbackTimePlugin, this is rollback safe
     time: Res<Time>,
 ) {
@@ -454,7 +526,7 @@ fn manage_trail(
                     DespawnOnExit(GameState::Playing),
                     Mesh3d(meshes.add(Cylinder::new(TRAIL_RADIUS, TRAIL_RADIUS))),
                     MeshMaterial3d(materials.add(StandardMaterial {
-                        base_color: PLAYER_COLOR[player.handle],
+                        base_color: SLOT_INFO[player.handle].color,
                         ..default()
                     })),
                     Transform {
@@ -480,12 +552,10 @@ fn check_collisions(
     mut commands: Commands,
     players: Query<(Entity, &Transform, &Player), With<Player>>,
     trails: Query<(&Transform, &TrailSegment), With<TrailSegment>>,
-    mut next_state: ResMut<NextState<RollbackState>>,
+    mut death_stack: ResMut<DeathStack>,
     time: Res<Time>,
 ) {
-    let num_players = players.count();
-
-    for (entity, player_trans, _player) in players {
+    for (entity, player_trans, player) in players {
         for (trail_transform, segment) in trails {
             if time.elapsed_secs_f64() - segment.created_at < MIN_TRAIL_LIFE {
                 // Don't collide with own most recently spawned segment
@@ -496,7 +566,7 @@ fn check_collisions(
             let b = trail_transform.translation;
 
             // We need the direction the trail is pointing to find the ends
-            // Since you used Quat::from_rotation_arc(Vec3::Y, direction),
+            // Since we used Quat::from_rotation_arc(Vec3::Y, direction),
             // the trail's local Y axis is its "length"
             let trail_dir = trail_transform.up();
             let half_height = TRAIL_SPAWN_DIST / 2.0;
@@ -508,15 +578,8 @@ fn check_collisions(
             let distance = dist_to_segment(p, start, end);
 
             if distance < (TRAIL_RADIUS + PLAYER_RADIUS) {
-                // You can refine this logic to be more strict
-                // or use actual Hitboxes if using a physics engine.
-                // For a first draft, simple distance is great.
-
                 commands.entity(entity).despawn();
-                if num_players - 1 <= 1 {
-                    // 0 or 1 player left, game over
-                    next_state.set(RollbackState::RoundEnd);
-                }
+                death_stack.push(player.handle);
             }
         }
     }
@@ -536,6 +599,53 @@ fn dist_to_segment(p: Vec3, a: Vec3, b: Vec3) -> f32 {
     let b2 = c1 / c2;
     let pb = a + v * b2;
     p.distance(pb)
+}
+
+fn check_round_end(
+    session: Res<Session<GameConfig>>,
+    players: Query<&Player, With<Player>>,
+    mut scores: ResMut<Scores>,
+    death_stack: Res<DeathStack>,
+    mut next_state: ResMut<NextState<RollbackState>>,
+) {
+    let num_players = match &*session {
+        Session::SyncTest(s) => s.num_players(),
+        Session::P2P(s) => s.num_players(),
+        Session::Spectator(s) => s.num_players(),
+    };
+
+    let num_players_remaining = players.count();
+
+    if num_players_remaining <= 1 {
+        // 0 or 1 player left, game over and distribute scores
+
+        let mut add_score = num_players as u32 - 1;
+        if let Ok(last_alive) = players.single() {
+            *scores.get_mut(&last_alive.handle).unwrap() += add_score;
+            add_score -= 1;
+        }
+
+        for handle in death_stack.iter().rev() {
+            *scores.get_mut(handle).unwrap() += add_score;
+            add_score = add_score.saturating_sub(1);
+        }
+
+        next_state.set(RollbackState::RoundEnd);
+    }
+}
+
+fn update_scoreboard(mut scoreboard: Single<&mut Text, With<Scoreboard>>, scores: Res<Scores>) {
+    scoreboard.0 = scoreboard_text(&scores);
+}
+
+fn scoreboard_text(scores: &HashMap<usize, u32>) -> String {
+    (0..scores.len())
+        .map(|handle| {
+            let score = scores[&handle];
+            Cow::<'static, str>::from(score.to_string())
+        })
+        .intersperse(" - ".into())
+        .collect()
 }
 
 fn round_end_timeout(

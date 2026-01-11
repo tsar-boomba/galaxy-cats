@@ -46,3 +46,4 @@ serde = { version = "1.0.228", features = ["derive"] }
 clap = { version = "4.5.54", features = ["derive"] }
 bevy_matchbox = { git = "https://github.com/tsar-boomba/matchbox.git", features = ["ggrs"] }
 bevy_roll_safe = { git = "https://github.com/tsar-boomba/bevy_roll_safe.git" }
+itertools = "0.14.0"

@@ -3215,6 +3215,7 @@ dependencies = [
  "bevy_matchbox",
  "bevy_roll_safe",
  "clap",
+ "itertools 0.14.0",
  "log",
  "serde",
 ]

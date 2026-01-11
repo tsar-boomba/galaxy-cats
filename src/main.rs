@@ -56,7 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn print_events_system(mut session: Option<ResMut<Session<game::BoxConfig>>>) {
+fn print_events_system(mut session: Option<ResMut<Session<game::GameConfig>>>) {
     match session.as_deref_mut() {
         Some(Session::P2P(s)) => {
             for event in s.events() {
@@ -78,7 +78,7 @@ fn print_events_system(mut session: Option<ResMut<Session<game::BoxConfig>>>) {
 fn print_network_stats_system(
     time: Res<Time>,
     mut timer: ResMut<NetworkStatsTimer>,
-    p2p_session: Option<Res<Session<game::BoxConfig>>>,
+    p2p_session: Option<Res<Session<game::GameConfig>>>,
 ) {
     // print only when timer runs out
     if timer.0.tick(time.delta()).just_finished()

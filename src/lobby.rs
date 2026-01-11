@@ -60,7 +60,7 @@ fn lobby_system(
     mut socket: ResMut<MatchboxSocket>,
     mut commands: Commands,
     mut text: Single<&mut Text, With<MainText>>,
-    existing_session: Option<ResMut<Session<game::BoxConfig>>>,
+    existing_session: Option<ResMut<Session<game::GameConfig>>>,
 ) {
     // regularly call update_peers to update the list of connected peers
     let Ok(peer_changes) = socket.try_update_peers() else {
@@ -95,7 +95,7 @@ fn lobby_system(
     let players = socket.players();
 
     // create a GGRS P2P session
-    let mut sess_build = SessionBuilder::<game::BoxConfig>::new()
+    let mut sess_build = SessionBuilder::<game::GameConfig>::new()
         .with_num_players(config.players)
         .with_max_prediction_window(12)
         .with_input_delay(2)

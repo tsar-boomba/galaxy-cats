@@ -58,7 +58,7 @@ fn lobby_config_setup(
         commands.remove_resource::<MatchboxSocket>();
     }
 
-    commands.remove_resource::<Session<game::BoxConfig>>();
+    commands.remove_resource::<Session<game::GameConfig>>();
 
     // All this is just for spawning centered text.
     commands
