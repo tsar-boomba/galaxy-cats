@@ -29,6 +29,9 @@ enum ButtonType {
     Join,
 }
 
+const MIN_PLAYERS: usize = 2;
+const MAX_PLAYERS: usize = 6;
+
 impl Plugin for LobbyConfigPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<LobbyConfig>()
@@ -144,15 +147,23 @@ fn lobby_config_system(
                     }
                     ButtonType::FivePlayers => {
                         lobby_config.players = 5;
-                    },
+                    }
                     ButtonType::SixPlayers => {
                         lobby_config.players = 6;
-                    },
+                    }
                     ButtonType::Join => {
                         // TODO: actually input server/room
-                        lobby_config.server = "wss://gc-matchbox.igamble.dev".into();
+                        #[cfg(not(debug_assertions))]
+                        {
+                            lobby_config.server = "wss://gc-matchbox.igamble.dev".into();
+                        }
+                        #[cfg(debug_assertions)]
+                        {
+                            lobby_config.server = "ws://localhost:3536".into();
+                        }
+
                         lobby_config.room = "bevy_ggrs".into();
-                        if (1..=4).contains(&lobby_config.players)
+                        if (MIN_PLAYERS..=MAX_PLAYERS).contains(&lobby_config.players)
                             && !lobby_config.server.is_empty()
                             && !lobby_config.room.is_empty()
                         {
@@ -182,7 +193,6 @@ fn lobby_config_system(
                             return;
                         }
                     }
-                    
                 }
             }
             Interaction::Hovered => {}
