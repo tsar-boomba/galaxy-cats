@@ -182,6 +182,7 @@ fn lobby_config_system(
                                             "stun:stun.l.google.com:19302".to_string(),
                                             "stun:stun1.l.google.com:19302".to_string(),
                                             "turn:gc-server.igamble.dev:3478".to_string(),
+                                            "turn:gc-server.igamble.dev:3478?transport=tcp".to_string(),
                                         ],
                                         // TODO: real turn auth???
                                         username: Some("username".into()),
