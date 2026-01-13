@@ -4,7 +4,6 @@ use bevy::{platform::collections::HashMap, prelude::*};
 use bevy_ggrs::{LocalInputs, LocalPlayers, prelude::*};
 use bevy_matchbox::prelude::*;
 use bevy_roll_safe::prelude::*;
-use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
 use crate::{FPS, GameState};
@@ -17,11 +16,11 @@ const INPUT_DASH: u8 = 1 << 3;
 const SPHERE_RADIUS: f32 = 4.0;
 const SPHERE_RADIUS_SQ: f32 = SPHERE_RADIUS * SPHERE_RADIUS;
 const MOVE_SPEED: f32 = 5.0;
-const ROTATE_SPEED: f32 = 0.5;
+const TURN_SPEED: f32 = 0.75;
 const GRAVITY: f32 = -75.0;
 const JUMP_VELOCITY: f32 = 16.0;
-const FUEL_USAGE: f32 = 66.6667;
-const FUEL_REGEN: f32 = 20.0;
+const FUEL_USAGE: f32 = 100.0;
+const FUEL_REGEN: f32 = 1. / 3.;
 const DASH_SPEED_MULTIPLIER: f32 = 2.0;
 const DASH_LENGTH: f32 = 0.7;
 const DASH_COOLDOWN: f32 = 4.0;
@@ -29,7 +28,7 @@ const PLAYER_RADIUS: f32 = 0.18;
 const TRAIL_RADIUS: f32 = 0.2;
 const TRAIL_SPAWN_DIST: f32 = TRAIL_RADIUS / 2.0;
 /// Trail must exist for this many seconds before it kills people
-const MIN_TRAIL_LIFE: f64 = 0.25;
+const MIN_TRAIL_LIFE: f64 = 0.07;
 
 struct SlotInfo {
     #[allow(unused)]
@@ -269,7 +268,7 @@ fn setup_env(
             Scoreboard,
         )],
     ));
-    
+
     // Brighten
     ambient_light.brightness = 500.0;
 
@@ -301,11 +300,11 @@ fn spawn_players(
     mut death_stack: ResMut<DeathStack>,
 ) {
     for player in players {
-        commands.entity(player).despawn();
+        commands.entity(player).try_despawn();
     }
 
     for trail in trails {
-        commands.entity(trail).despawn();
+        commands.entity(trail).try_despawn();
     }
 
     death_stack.clear();
@@ -394,16 +393,6 @@ fn move_player(
         let right = inputs & INPUT_RIGHT != 0;
         let jump = inputs & INPUT_JUMP != 0;
         let dash = inputs & INPUT_DASH != 0;
-
-        // We turn around the local Y axis (the alien's "up")
-        if left {
-            transform.rotate_local_y(PI * ROTATE_SPEED * dt);
-        }
-
-        if right {
-            transform.rotate_local_y(-PI * ROTATE_SPEED * dt);
-        }
-
         let is_grounded = transform.translation.length_squared() <= SPHERE_RADIUS_SQ + 0.02;
 
         // Start dashing if dash was pressed
@@ -449,6 +438,16 @@ fn move_player(
             vel.y += delta_grav;
         } else {
             vel.y = 0.0;
+        }
+
+        // We turn around the local Y axis (the alien's "up")
+        let turn_speed = TURN_SPEED;
+        if left {
+            transform.rotate_local_y(PI * turn_speed * dt);
+        }
+
+        if right {
+            transform.rotate_local_y(-PI * turn_speed * dt);
         }
 
         // The position vector IS the "up" vector since the sphere is centered at (0,0,0)
@@ -578,7 +577,7 @@ fn check_collisions(
             let distance = dist_to_segment(p, start, end);
 
             if distance < (TRAIL_RADIUS + PLAYER_RADIUS) {
-                commands.entity(entity).despawn();
+                commands.entity(entity).try_despawn();
                 death_stack.push(player.handle);
             }
         }
@@ -685,7 +684,7 @@ fn move_camera(
 
     // Position camera 10 units "back" and 4 units "up" relative to player's current orientation
     let backwards = -player_transform.forward();
-    let cam_pos = player_pos + (backwards * 8.0) + (player_up * 6.0);
+    let cam_pos = player_pos + (backwards * 8.0) + (player_up * 8.0);
 
     cam_transform.translation = cam_pos;
     // Look at the player, keeping the planet's "Up" as the camera's "Up"

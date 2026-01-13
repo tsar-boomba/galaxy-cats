@@ -1,5 +1,7 @@
 //! Eat the cakes. Eat them all. An example 3D game.
 
+#![feature(iter_intersperse)]
+
 pub mod game;
 mod lobby;
 mod lobby_config;
