@@ -684,7 +684,7 @@ fn move_camera(
 
     // Position camera 10 units "back" and 4 units "up" relative to player's current orientation
     let backwards = -player_transform.forward();
-    let cam_pos = player_pos + (backwards * 8.0) + (player_up * 8.0);
+    let cam_pos = player_pos + (backwards * 0.01) + (player_up * 8.0);
 
     cam_transform.translation = cam_pos;
     // Look at the player, keeping the planet's "Up" as the camera's "Up"
